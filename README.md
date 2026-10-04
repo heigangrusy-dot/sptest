@@ -28,7 +28,7 @@
 | # | 任务 | 板载资源 / 引脚 | 验证方式 | 状态 |
 |---|------|----------------|---------|--------|
 | 1 | **蜂鸣器控制**：成功烧录或上电后有提示音，音乐可自定义 | 贴片无源蜂鸣器，`TIM4_CH3` → **PD14**，额定 4000 Hz，需 PWM 驱动 | 上电听到可辨认的旋律，且旋律能替换 | ⬜ |
-| 2 | **LED 控制**：流水灯灯效，并以此判断程序是否阻塞 | 共阳 RGB LED，`TIM5_CH1/2/3` → **PH10(蓝) / PH11(绿) / PH12(红)**，IO 高电平点亮 | 多色流水 + 呼吸；能解释「灯定住」对应哪类阻塞 | 🚧 |
+| 2 | **LED 控制**：三色呼吸流水灯，并以此判断程序是否阻塞 | 共阳 RGB LED，`TIM5_CH1/2/3` → **PH10(蓝) / PH11(绿) / PH12(红)**，IO 高电平点亮 | 多色流水 + 呼吸；能解释「灯定住」对应哪类阻塞 | 🚧 |
 | 3 | **串口打印**：在上位机软件中打印 IMU 三轴数据 | BMI088，`SPI1`：CLK **PB3** / MISO **PB4** / MOSI **PA7**；片选 `CS1_Accel` **PA4**、`CS1_Gyro` **PB0**；加热 `TIM10_CH1` **PF6**；输出经 `USART1` | SerialPlot 上出现随时间变化的曲线 | ⬜ |
 | 4 | **遥控器控制**：C 板与 DT7 遥控器正常通讯 | 接收机 DR16 接 DBUS 接口，信号反相后入 `USART3_RX` = **PC11**，100 kbps，8E1，18 字节/帧 | 摇杆/拨轮/开关读数随操作变化，可判断是否在线 | ⬜ |
 
@@ -164,6 +164,10 @@
   # source [find interface/stlink.cfg]    # 若改用 ST-Link，把这两行注释对调
   source [find target/stm32f4x.cfg]
   ```
+- ⚠️ 本仓库使用 `git submodule` 引入 `sp_middleware`，
+  **克隆时必须加 `--recursive`**，否则 `sp_middleware/` 为空、编译失败：
+  ```bash
+  git clone --recursive https://github.com/heigangrusy-dot/sptest.git
 
 ### 代码相关
 
