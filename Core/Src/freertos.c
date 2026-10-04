@@ -49,6 +49,7 @@
 /* USER CODE END Variables */
 osThreadId defaultTaskHandle;
 osThreadId LedTaskHandle;
+osThreadId BuzzerTaskHandle;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -57,6 +58,7 @@ osThreadId LedTaskHandle;
 
 void StartDefaultTask(void const * argument);
 extern void led_task(void const * argument);
+extern void buzzer_task(void const * argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -110,6 +112,10 @@ void MX_FREERTOS_Init(void) {
   /* definition and creation of LedTask */
   osThreadDef(LedTask, led_task, osPriorityNormal, 0, 128);
   LedTaskHandle = osThreadCreate(osThread(LedTask), NULL);
+
+  /* definition and creation of BuzzerTask */
+  osThreadDef(BuzzerTask, buzzer_task, osPriorityNormal, 0, 128);
+  BuzzerTaskHandle = osThreadCreate(osThread(BuzzerTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
