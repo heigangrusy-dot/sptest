@@ -3,7 +3,7 @@
 
 namespace
 {
-// 音名+频率（HZ）
+// 音名+频率（Hz）
 constexpr uint16_t NOTE_C4 = 262;  //中音Do
 constexpr uint16_t NOTE_D4 = 294;
 constexpr uint16_t NOTE_E4 = 330;
@@ -27,7 +27,7 @@ constexpr Note STARTUP_SONG[] = {
   {NOTE_B4, 150}, {NOTE_C5, 300}, {NOTE_A4, 150}, {NOTE_F4, 150}, {NOTE_C4, 400},
 };
 constexpr uint32_t SONG_LENGTH = sizeof(STARTUP_SONG) / sizeof(STARTUP_SONG[0]);
-}  //namespace
+}  // namespace
 
 sp::Buzzer buzzer(&htim4, TIM_CHANNEL_3, 84e6);
 

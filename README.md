@@ -29,7 +29,7 @@
 |---|------|----------------|---------|--------|
 | 1 | **蜂鸣器控制**：成功烧录或上电后有提示音，音乐可自定义 | 贴片无源蜂鸣器，`TIM4_CH3` → **PD14**，额定 4000 Hz，需 PWM 驱动; 见 `applications/buzzer_task.cpp`（接入 `sp::Buzzer`） | 上电听到可辨认的旋律，且旋律能替换 | 🚧 |
 | 2 | **LED 控制**：三色呼吸流水灯，并以此判断程序是否阻塞 | 共阳 RGB LED，`TIM5_CH1/2/3` → **PH10(蓝) / PH11(绿) / PH12(红)**，IO 高电平点亮 | 多色流水 + 呼吸；能解释「灯定住」对应哪类阻塞 | 🚧 |
-| 3 | **串口打印**：在上位机软件中打印 IMU 三轴数据 | BMI088，`SPI1`：CLK **PB3** / MISO **PB4** / MOSI **PA7**；片选 `CS1_Accel` **PA4**、`CS1_Gyro` **PB0**；加热 `TIM10_CH1` **PF6**；输出经 `USART1` | SerialPlot 上出现随时间变化的曲线 | ⬜ |
+| 3 | **串口打印**：在上位机软件中打印 IMU 三轴数据 | BMI088，`SPI1`：CLK **PB3** / MISO **PB4** / MOSI **PA7**；片选 `CS1_ACC` **PA4**、`CS1_GYRO` **PB0**（低有效，空闲拉高）；加热 `TIM10_CH1` **PF6**；输出经 `USART1`（921600）；见 `applications/imu_task.cpp`（`sp::BMI088` + `sp::Mahony` + `sp::Plotter`） | SerialPlot 上出现随时间变化的曲线（Binary 模式 / 10 通道） | 🚧 |
 | 4 | **遥控器控制**：C 板与 DT7 遥控器正常通讯 | 接收机 DR16 接 DBUS 接口，信号反相后入 `USART3_RX` = **PC11**，100 kbps，8E1，18 字节/帧 | 摇杆/拨轮/开关读数随操作变化，可判断是否在线 | ⬜ |
 
 ### 4.4.1.2 姿态与电机联动
@@ -164,10 +164,8 @@
   # source [find interface/stlink.cfg]    # 若改用 ST-Link，把这两行注释对调
   source [find target/stm32f4x.cfg]
   ```
-- ⚠️ 本仓库使用 `git submodule` 引入 `sp_middleware`，
-  **克隆时必须加 `--recursive`**，否则 `sp_middleware/` 为空、编译失败：
-  ```bash
-  git clone --recursive https://github.com/heigangrusy-dot/sptest.git
+- ⚠️ 查看 IMU 数据必须用 **SerialPlot**：数据格式选 `Binary`、波特率 **921600**、通道数 **10**。
+  用 XCOM 等文本串口助手只会看到乱码（发的是二进制浮点帧，帧头 `0xAA 0xBB`）。
 
 ### 代码相关
 
@@ -178,6 +176,10 @@
 - ⚠️ `FREERTOS → Tasks and Queues` 中必须**保留名为 `defaultTask` 的默认任务**。清空该页会导致 CubeMX 代码模板渲染失败，生成的 `freertos.c` 会出现 `#n` 等非法内容，且整个项目生成中断。
 - **LED 是独占资源**：同一时刻只应有一个任务控制 RGB LED，否则多个任务抢着改颜色会看起来像乱闪。建议由一个任务统一读取状态并显示。
 - 编译产物在 `build/`（已被 `.gitignore` 忽略，不纳入版本管理）。
+- ⚠️ 本仓库使用 `git submodule` 引入 `sp_middleware`，
+  **克隆时必须加 `--recursive`**，否则 `sp_middleware/` 为空、编译失败：
+  ```bash
+  git clone --recursive https://github.com/heigangrusy-dot/sptest.git
 
 ### 排查手段
 
@@ -241,6 +243,7 @@ sptest/
 | 2026-10-04 | `c767df7` | LED 第一步：用 GPIO 实现三色轮流点亮，走通「CubeMX 加外设 → 写 `applications/` → 登记 `CMakeLists.txt` → 加任务 → 编译」全链路 |
 | 2026-10-04 | `34a90c9` `v0.2.0-led` | LED 完成：接入 `sp_middleware`，改用 `TIM5` PWM 实现三色呼吸流水灯 |
 | 2026-10-04 | `v0.3.0-buzzer` | 蜂鸣器提示音：TIM4_CH3 PWM + `sp::Buzzer`，音名表可自定义 |
+| 2026-10-05 | `v0.4.0-imu` | IMU 三轴数据上传上位机：`SPI1` 通读 BMI088（加速度 / 角速度 / 温度），经 `sp::Mahony` 解算姿态，用 `sp::Plotter` 以 1 kHz 发二进制帧给 SerialPlot |
 | | | |
 
 ### 里程碑规划
