@@ -21,7 +21,7 @@ struct Note
   uint16_t ms;  //持续时间
 };
 
-//上行音阶+下行琶音，作为“上电成功”提示音
+//“上电成功”提示音
 constexpr Note STARTUP_SONG[] = {
   {NOTE_C4, 150}, {NOTE_D4, 150}, {NOTE_E4, 150}, {NOTE_F4, 150}, {NOTE_G4, 150}, {NOTE_A4, 150},
   {NOTE_B4, 150}, {NOTE_C5, 300}, {NOTE_A4, 150}, {NOTE_F4, 150}, {NOTE_C4, 400},
