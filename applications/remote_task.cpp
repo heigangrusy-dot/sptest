@@ -10,7 +10,7 @@ extern "C" void remote_task(void const * argument)
   remote.request();
 
   while (true) {
-       osDelay(10);
+    osDelay(10);
   }
 }
 

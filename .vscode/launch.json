@@ -9,11 +9,12 @@
             "type": "cortex-debug",
             "servertype": "openocd",
             "configFiles": [
-                "openocd.cfg",
+                "openocd.cfg"
             ],
+            "runToEntryPoint": "main",
             "liveWatch": {
                 "enabled": true,
-                "samplesPerSecond": 20
+                "samplesPerSecond": 4
             },
             "preLaunchTask": "CMake: build"
         }
