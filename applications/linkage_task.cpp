@@ -3,6 +3,8 @@
 #include "io/dbus/dbus.hpp"
 #include "io/plotter/plotter.hpp"
 #include "motor/rm_motor/rm_motor.hpp"
+#include "tools/mahony/mahony.hpp"
+#include "tools/math_tools/math_tools.hpp"
 #include "tools/pid/pid.hpp"
 
 namespace
@@ -19,7 +21,7 @@ constexpr float K_RATIO_UP = 3.0f;    // 左拨杆上
 constexpr float YAW_SCALE = 0.05f;
 
 // 手动拖拽吸收增益（0=不吸收，越大越跟随手）
-constexpr float K_DRAG = 0.02f;
+constexpr float K_DRAG = 0.03f;
 }  // namespace
 
 // 两个GM6020：拨码开关把 ID 设成 1 和 2
@@ -31,14 +33,15 @@ sp::CAN can1(&hcan1);
 // 自己一个plotter
 extern sp::Plotter plotter;
 extern sp::DBus remote;
+extern sp::Mahony imu;
 
 float phi = 0.0f;
 float yaw_last = 0.0f;
+float k_last = 0.0f;
 
 sp::PID pid_A(0.001f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, false, true);
 //           dt=1ms    kp    ki   kd  max_out  max_iout  alpha  angular  dynamic
 sp::PID pid_B(0.001f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, false, true);
-
 float target_angle = 0.0f;
 
 extern "C" void linkage_task(void const * argument)
@@ -51,22 +54,23 @@ extern "C" void linkage_task(void const * argument)
     }
   }
 
-  osDelay(500);   // 等待CAN总线稳定
-  can1.config();  // 使用C板官方示例的CAN过滤器配置
-  can1.start();   // 启动CAN总线
+  osDelay(500);
+  can1.config();
+  can1.start();
 
-  // ★★★ 等两个电机都有反馈了，再采零点（否则会采到初值 0！）
+  // 等两个电机都上线再采零点
   while (!motor_A.is_alive(osKernelSysTick()) || !motor_B.is_alive(osKernelSysTick())) {
     osDelay(10);
   }
   osDelay(50);
 
-  const float a_zero = motor_A.angle;
-  const float b_zero = motor_B.angle;
+  float a_zero = motor_A.angle;
+  float b_zero = motor_B.angle;
   phi = 0.0f;
-  yaw_last = remote.ch_rh;
+  yaw_last = imu.yaw;
 
   while (true) {
+    //失联保护
     if (!motor_A.is_alive(osKernelSysTick()) || !motor_B.is_alive(osKernelSysTick())) {
       motor_A.cmd(0.0f);
       motor_B.cmd(0.0f);
@@ -77,21 +81,74 @@ extern "C" void linkage_task(void const * argument)
       continue;
     }
 
-    //遥控器在线检查
-    // ★ 简化版：φ 直接跟随 A 的转角，B 跟随 k 倍
-    constexpr float k = 3.0f;
-    phi = motor_A.angle - a_zero;
+    //读拨杆
+    const bool rc_ok = remote.is_alive(osKernelSysTick());
+    const sp::DBusSwitchMode mode_r = rc_ok ? remote.sw_r : sp::DBusSwitchMode::DOWN;
+    const sp::DBusSwitchMode mode_l = rc_ok ? remote.sw_l : sp::DBusSwitchMode::DOWN;
 
-    pid_A.calc(phi + a_zero, motor_A.angle);  // A 目标=自己 → 手能拖
-    pid_B.calc(k * phi + b_zero, motor_B.angle);
+    //左拨杆
+    float k = K_RATIO_UP;
+    if (mode_l == sp::DBusSwitchMode::DOWN) {
+      k = K_RATIO_DOWN;
+    }
+    else if (mode_l == sp::DBusSwitchMode::MID) {
+      k = K_RATIO_MID;
+    }
 
-    motor_A.cmd(pid_A.out);
-    motor_B.cmd(pid_B.out);
+    if (k != k_last) {
+      a_zero = motor_A.angle;
+      b_zero = motor_B.angle;
+      phi = 0.0f;
+      yaw_last = imu.yaw;
+      k_last = k;
+    }
+
+    // 右拨杆
+    switch (mode_r) {
+      case sp::DBusSwitchMode::DOWN:  //失能
+        motor_A.cmd(0.0f);
+        motor_B.cmd(0.0f);
+        pid_A.clear();
+        pid_B.clear();
+        phi = motor_A.angle - a_zero;
+        yaw_last = imu.yaw;
+        break;
+
+      case sp::DBusSwitchMode::MID: {  //联动
+        // 遥控器 yaw 的增量驱动 φ7
+        const float d_yaw = sp::limit_angle(imu.yaw - yaw_last);
+        yaw_last = imu.yaw;
+        phi += d_yaw;
+
+        // 手动拖拽
+        phi += K_DRAG * (motor_A.angle - (phi + a_zero));
+        phi += K_DRAG * ((motor_B.angle - b_zero) / k - phi);
+
+        // 两个电机的目标
+        pid_A.calc(phi + a_zero, motor_A.angle);
+        pid_B.calc(k * phi + b_zero, motor_B.angle);
+        motor_A.cmd(pid_A.out);
+        motor_B.cmd(pid_B.out);
+        break;
+      }
+
+      case sp::DBusSwitchMode::UP:  //复位
+        phi = 0.0f;
+        yaw_last = imu.yaw;
+        pid_A.calc(phi + a_zero, motor_A.angle);
+        pid_B.calc(k * phi + b_zero, motor_B.angle);
+        motor_A.cmd(pid_A.out);
+        motor_B.cmd(pid_B.out);
+        break;
+    }
+
+    //一帧控两个电机
     motor_A.write(can1.tx_data);
     motor_B.write(can1.tx_data);
     can1.send(motor_A.tx_id);
 
-    plotter.plot(motor_A.angle, motor_B.angle, phi + a_zero, k * phi + b_zero);
+    //绘图（6 通道
+    plotter.plot(motor_A.angle, motor_B.angle, phi + a_zero, k * phi + b_zero, phi, k * phi);
 
     osDelay(1);
   }
