@@ -9,9 +9,9 @@
 
 namespace
 {
-// 实验室验证基础功能期间设 false（不跑 CAN）
-// 以后验证 CAN / 电机时改回 true
+// 调试时可置 false 单独跑非 CAN 功能
 constexpr bool ENABLE_CAN = true;
+
 constexpr float K_RATIO_DOWN = 0.5f;  // 左拨杆下
 constexpr float K_RATIO_MID = -1.0f;  // 左拨杆中
 constexpr float K_RATIO_UP = 3.0f;    // 左拨杆上
@@ -20,29 +20,32 @@ constexpr float K_RATIO_UP = 3.0f;    // 左拨杆上
 constexpr float K_DRAG = 0.025f;
 
 // 复位目标角
-constexpr float A_HOME = -3.50208f;
-constexpr float B_HOME = -0.368155f;
-constexpr float YAW_CALIB = 0.0107f;
+constexpr float A_HOME = -2.681927f;
+constexpr float B_HOME = 0.431049f;
+constexpr float YAW_CALIB = 0.010181f;
+constexpr float RESET_MAX_SPEED = 3.0f;
 }  // namespace
 
 // 两个GM6020：拨码开关把 ID 设成 1 和 2
-sp::RM_Motor motor_A(1, sp::RM_Motors::GM6020);
-sp::RM_Motor motor_B(2, sp::RM_Motors::GM6020);
+static sp::RM_Motor motor_A(1, sp::RM_Motors::GM6020);
+static sp::RM_Motor motor_B(2, sp::RM_Motors::GM6020);
 
-sp::CAN can1(&hcan1);
+static sp::CAN can1(&hcan1);
 
-extern sp::Plotter plotter;
+static float phi = 0.0f;
+static float yaw_last = 0.0f;
+static float k_last = 0.0f;
+static sp::DBusSwitchMode mode_last = sp::DBusSwitchMode::DOWN;
+static float reset_set_A = 0.0f;
+static float reset_set_B = 0.0f;
+
+static sp::PID pid_A(0.001f, 1.3f, 0.0f, 0.045f, 1.0f, 0.0f, 0.5f, false, true);
+//           dt=1ms    kp    ki   kd  max_out  max_iout  alpha  angular  dynamic
+static sp::PID pid_B(0.001f, 1.3f, 0.0f, 0.045f, 1.0f, 0.0f, 0.5f, false, true);
+
+//extern sp::Plotter plotter;
 extern sp::DBus remote;
 extern sp::Mahony imu;
-
-float phi = 0.0f;
-float yaw_last = 0.0f;
-float k_last = 0.0f;
-sp::DBusSwitchMode mode_last = sp::DBusSwitchMode::DOWN;
-
-sp::PID pid_A(0.001f, 1.3f, 0.0f, 0.045f, 1.0f, 0.0f, 0.5f, false, true);
-//           dt=1ms    kp    ki   kd  max_out  max_iout  alpha  angular  dynamic
-sp::PID pid_B(0.001f, 1.3f, 0.0f, 0.045f, 1.0f, 0.0f, 0.5f, false, true);
 
 extern "C" void linkage_task(void const * argument)
 {
@@ -96,12 +99,21 @@ extern "C" void linkage_task(void const * argument)
 
     const bool entering_mid =
       (mode_r == sp::DBusSwitchMode::MID) && (mode_last != sp::DBusSwitchMode::MID);
+    const bool entering_up =
+      (mode_r == sp::DBusSwitchMode::UP) && (mode_last != sp::DBusSwitchMode::UP);
     if (entering_mid || k != k_last) {
       a_zero = motor_A.angle;
       b_zero = motor_B.angle;
       phi = 0.0f;
       yaw_last = imu.yaw;
     }
+
+    // 刚进复位档：把"逐步目标"从当前位置开始
+    if (entering_up) {
+      reset_set_A = motor_A.angle;
+      reset_set_B = motor_B.angle;
+    }
+
     mode_last = mode_r;
     k_last = k;
 
@@ -117,7 +129,7 @@ extern "C" void linkage_task(void const * argument)
         break;
 
       case sp::DBusSwitchMode::MID: {  //联动
-        // 遥控器 yaw 的增量驱动 φ7
+        // 遥控器 yaw 的增量驱动 φ
         const float d_yaw = sp::limit_angle(imu.yaw - yaw_last);
         yaw_last = imu.yaw;
         phi += d_yaw;
@@ -140,10 +152,16 @@ extern "C" void linkage_task(void const * argument)
         // R 标对齐位置 = 校准值 + C 板当前 yaw
         const float home_A = A_HOME + (imu.yaw - YAW_CALIB);
         const float home_B = B_HOME + (imu.yaw - YAW_CALIB);
-        const float set_A = motor_A.angle + sp::limit_angle(home_A - motor_A.angle);
-        const float set_B = motor_B.angle + sp::limit_angle(home_B - motor_B.angle);
-        pid_A.calc(set_A, motor_A.angle);
-        pid_B.calc(set_B, motor_B.angle);
+
+        // 目标角限速逼近：每帧最多移动 RESET_MAX_SPEED * dt（dt = 1ms）
+        const float step = RESET_MAX_SPEED * 0.001f;
+        const float goal_A = reset_set_A + sp::limit_angle(home_A - reset_set_A);
+        const float goal_B = reset_set_B + sp::limit_angle(home_B - reset_set_B);
+        reset_set_A += sp::limit_max(goal_A - reset_set_A, step);
+        reset_set_B += sp::limit_max(goal_B - reset_set_B, step);
+
+        pid_A.calc(reset_set_A, motor_A.angle);
+        pid_B.calc(reset_set_B, motor_B.angle);
         motor_A.cmd(pid_A.out);
         motor_B.cmd(pid_B.out);
 
@@ -161,10 +179,10 @@ extern "C" void linkage_task(void const * argument)
     motor_B.write(can1.tx_data);
     can1.send(motor_A.tx_id);
 
-    //绘图（6 通道
-    const float err_A = (phi + a_zero) - motor_A.angle;
-    const float err_B = (k * phi + b_zero) - motor_B.angle;
-    plotter.plot(err_A, err_B, phi, imu.yaw, motor_A.angle, motor_B.angle);
+    //绘图（6 通道)
+    //const float err_A = (phi + a_zero) - motor_A.angle;
+    //const float err_B = (k * phi + b_zero) - motor_B.angle;
+    //plotter.plot(err_A, err_B, phi, imu.yaw, motor_A.angle, motor_B.angle);
     osDelay(1);
   }
 }
