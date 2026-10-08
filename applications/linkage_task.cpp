@@ -12,16 +12,17 @@ namespace
 // 实验室验证基础功能期间设 false（不跑 CAN）
 // 以后验证 CAN / 电机时改回 true
 constexpr bool ENABLE_CAN = true;
-
 constexpr float K_RATIO_DOWN = 0.5f;  // 左拨杆下
 constexpr float K_RATIO_MID = -1.0f;  // 左拨杆中
 constexpr float K_RATIO_UP = 3.0f;    // 左拨杆上
 
-// 遥控器 yaw 灵敏度（摇杆满偏 → φ 变化多少 rad）
-constexpr float YAW_SCALE = 0.05f;
-
 // 手动拖拽吸收增益（0=不吸收，越大越跟随手）
-constexpr float K_DRAG = 0.03f;
+constexpr float K_DRAG = 0.025f;
+
+// 复位目标角
+constexpr float A_HOME = -3.50208f;
+constexpr float B_HOME = -0.368155f;
+constexpr float YAW_CALIB = 0.0107f;
 }  // namespace
 
 // 两个GM6020：拨码开关把 ID 设成 1 和 2
@@ -30,7 +31,6 @@ sp::RM_Motor motor_B(2, sp::RM_Motors::GM6020);
 
 sp::CAN can1(&hcan1);
 
-// 自己一个plotter
 extern sp::Plotter plotter;
 extern sp::DBus remote;
 extern sp::Mahony imu;
@@ -38,11 +38,11 @@ extern sp::Mahony imu;
 float phi = 0.0f;
 float yaw_last = 0.0f;
 float k_last = 0.0f;
+sp::DBusSwitchMode mode_last = sp::DBusSwitchMode::DOWN;
 
-sp::PID pid_A(0.001f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, false, true);
+sp::PID pid_A(0.001f, 1.3f, 0.0f, 0.045f, 1.0f, 0.0f, 0.5f, false, true);
 //           dt=1ms    kp    ki   kd  max_out  max_iout  alpha  angular  dynamic
-sp::PID pid_B(0.001f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, false, true);
-float target_angle = 0.0f;
+sp::PID pid_B(0.001f, 1.3f, 0.0f, 0.045f, 1.0f, 0.0f, 0.5f, false, true);
 
 extern "C" void linkage_task(void const * argument)
 {
@@ -63,7 +63,6 @@ extern "C" void linkage_task(void const * argument)
     osDelay(10);
   }
   osDelay(50);
-
   float a_zero = motor_A.angle;
   float b_zero = motor_B.angle;
   phi = 0.0f;
@@ -95,13 +94,16 @@ extern "C" void linkage_task(void const * argument)
       k = K_RATIO_MID;
     }
 
-    if (k != k_last) {
+    const bool entering_mid =
+      (mode_r == sp::DBusSwitchMode::MID) && (mode_last != sp::DBusSwitchMode::MID);
+    if (entering_mid || k != k_last) {
       a_zero = motor_A.angle;
       b_zero = motor_B.angle;
       phi = 0.0f;
       yaw_last = imu.yaw;
-      k_last = k;
     }
+    mode_last = mode_r;
+    k_last = k;
 
     // 右拨杆
     switch (mode_r) {
@@ -121,8 +123,10 @@ extern "C" void linkage_task(void const * argument)
         phi += d_yaw;
 
         // 手动拖拽
-        phi += K_DRAG * (motor_A.angle - (phi + a_zero));
-        phi += K_DRAG * ((motor_B.angle - b_zero) / k - phi);
+        if (std::abs(d_yaw) < 0.0005f) {
+          phi += K_DRAG * (motor_A.angle - (phi + a_zero));
+          phi += K_DRAG * ((motor_B.angle - b_zero) / k - phi);
+        }
 
         // 两个电机的目标
         pid_A.calc(phi + a_zero, motor_A.angle);
@@ -132,14 +136,24 @@ extern "C" void linkage_task(void const * argument)
         break;
       }
 
-      case sp::DBusSwitchMode::UP:  //复位
-        phi = 0.0f;
-        yaw_last = imu.yaw;
-        pid_A.calc(phi + a_zero, motor_A.angle);
-        pid_B.calc(k * phi + b_zero, motor_B.angle);
+      case sp::DBusSwitchMode::UP: {  //复位
+        // R 标对齐位置 = 校准值 + C 板当前 yaw
+        const float home_A = A_HOME + (imu.yaw - YAW_CALIB);
+        const float home_B = B_HOME + (imu.yaw - YAW_CALIB);
+        const float set_A = motor_A.angle + sp::limit_angle(home_A - motor_A.angle);
+        const float set_B = motor_B.angle + sp::limit_angle(home_B - motor_B.angle);
+        pid_A.calc(set_A, motor_A.angle);
+        pid_B.calc(set_B, motor_B.angle);
         motor_A.cmd(pid_A.out);
         motor_B.cmd(pid_B.out);
+
+        // 复位后，联动零点 = 当前（R 标）位置
+        a_zero = motor_A.angle;
+        b_zero = motor_B.angle;
+        phi = 0.0f;
+        yaw_last = imu.yaw;
         break;
+      }
     }
 
     //一帧控两个电机
@@ -148,8 +162,9 @@ extern "C" void linkage_task(void const * argument)
     can1.send(motor_A.tx_id);
 
     //绘图（6 通道
-    plotter.plot(motor_A.angle, motor_B.angle, phi + a_zero, k * phi + b_zero, phi, k * phi);
-
+    const float err_A = (phi + a_zero) - motor_A.angle;
+    const float err_B = (k * phi + b_zero) - motor_B.angle;
+    plotter.plot(err_A, err_B, phi, imu.yaw, motor_A.angle, motor_B.angle);
     osDelay(1);
   }
 }
